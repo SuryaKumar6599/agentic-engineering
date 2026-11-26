@@ -585,6 +585,7 @@ class ClinicalAssessmentAgent:
         structured: StructuredCaseData,
         codings: List[MedDRACoding],
         use_llm: bool = False,
+        deep_reasoning: bool = False,
     ) -> Tuple[SeriousnessAssessment, CausalityAssessment, ListednessAssessment, str, AgentTraceStep]:
         t0 = time.perf_counter()
         text = str(payload.get("raw_text", "")).lower()
@@ -690,6 +691,7 @@ class ClinicalAssessmentAgent:
 
         llm_model_used = "deterministic-rules"
         if use_llm:
+            target_model = REASONING_MODEL if deep_reasoning else FAST_MODEL
             llm_assess = ollama_chat_json(
                 system_prompt=(
                     "You are a senior pharmacovigilance clinical scientist. Given structured case data, "
@@ -704,17 +706,17 @@ class ClinicalAssessmentAgent:
                     f"MedDRA PTs: {[c.pt for c in codings]}, "
                     f"Seriousness: {seriousness.rationale}, Listedness: {listed_status}, Outcome: {structured.reaction_outcome}."
                 ),
-                model=REASONING_MODEL,
-                timeout=120.0,
+                model=target_model,
+                timeout=90.0 if deep_reasoning else 15.0,
             )
             if isinstance(llm_assess, dict):
                 if llm_assess.get("who_umc_category") in {"Certain", "Probable/Likely", "Possible", "Unlikely", "Unassessable"}:
                     causality.who_umc_category = llm_assess["who_umc_category"]
                 if llm_assess.get("causality_rationale"):
-                    causality.rationale = f"[{REASONING_MODEL}] {llm_assess['causality_rationale']} (Naranjo: {naranjo}, {naranjo_cat})."
+                    causality.rationale = f"[{target_model}] {llm_assess['causality_rationale']} (Naranjo: {naranjo}, {naranjo_cat})."
                 if llm_assess.get("narrative") and len(str(llm_assess["narrative"]).strip()) >= 60:
                     narrative = str(llm_assess["narrative"]).strip()
-                llm_model_used = REASONING_MODEL
+                llm_model_used = target_model
 
         trace = AgentTraceStep(
             agent_name=self.name,
@@ -773,7 +775,7 @@ class QCAgent:
                     f"Narrative: {case.narrative_text}"
                 ),
                 model=FAST_MODEL,
-                timeout=25.0,
+                timeout=12.0,
             )
             if isinstance(qc_llm, dict):
                 llm_model_used = FAST_MODEL
@@ -956,7 +958,7 @@ def run_intake_pipeline(
     # Stage 6: Automated QC Pre-Check (if awaiting QC)
     if status == CaseStatus.AWAITING_QC:
         qc_agent = QCAgent()
-        qc_res, t6 = qc_agent.run(case)
+        qc_res, t6 = qc_agent.run(case, use_llm=use_llm)
         case.qc_checklist = qc_res
         case.agent_traces.append(t6)
 

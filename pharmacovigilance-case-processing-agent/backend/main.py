@@ -152,7 +152,8 @@ def list_cases(
             or any(ql in d.name.lower() for d in c.structured_data.suspect_drugs)
             or any(ql in m.pt.lower() for m in c.meddra_codings)
         ]
-    return cases
+    # Strip heavy raw_report blob in list view (full raw_report is returned on GET /api/cases/{case_id})
+    return [c.model_copy(update={"raw_report": {}}) for c in cases]
 
 
 @app.get("/api/cases/{case_id}")
@@ -219,7 +220,10 @@ def ingest_from_openfda(
     if not records:
         raise HTTPException(status_code=502, detail="Unable to fetch openFDA records")
 
-    created = [run_intake_pipeline(source_type="Regulatory / FAERS", raw_json=r) for r in records]
+    # For batch ingestion (limit > 1), use fast deterministic pipeline (<1s) so UI never hangs;
+    # single-case ingestion (limit == 1) and Re-assess/Medical Review use live Ollama LLMs.
+    use_llm = limit == 1
+    created = [run_intake_pipeline(source_type="Regulatory / FAERS", raw_json=r, use_llm=use_llm) for r in records]
     return {"source": source_used, "ingested_count": len(created), "case_ids": [c.case_id for c in created]}
 
 
@@ -245,7 +249,7 @@ def ingest_openfda_device(
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"openFDA Device API error: {exc}")
 
-    created = [run_intake_pipeline(source_type="Regulatory / FDA MAUDE (Device)", raw_json=r) for r in records]
+    created = [run_intake_pipeline(source_type="Regulatory / FDA MAUDE (Device)", raw_json=r, use_llm=(limit == 1)) for r in records]
     return {"source": "openFDA Device MAUDE API", "ingested_count": len(created), "case_ids": [c.case_id for c in created]}
 
 
@@ -299,7 +303,7 @@ def ingest_pubmed(
             "query_drug": first_word,
             "raw_text": f"{title}. {abstract}",
         }
-        c = run_intake_pipeline(source_type="Literature (PubMed)", raw_json=payload)
+        c = run_intake_pipeline(source_type="Literature (PubMed)", raw_json=payload, use_llm=(limit == 1))
         created_ids.append(c.case_id)
 
     return {"source": "PubMed Literature (NCBI E-utilities)", "ingested_count": len(created_ids), "case_ids": created_ids}
@@ -352,7 +356,7 @@ def ingest_clinicaltrials(
             "ae_summary": f"Serious events reported: {', '.join(serious_ev)}. Other events: {', '.join(other_ev)}.",
             "raw_text": f"Clinical trial {nct_id} ({title}) evaluating {', '.join(interventions or [query])}. Reported adverse events: {', '.join(ae_terms)}.",
         }
-        c = run_intake_pipeline(source_type="Clinical Trial (ClinicalTrials.gov)", raw_json=payload)
+        c = run_intake_pipeline(source_type="Clinical Trial (ClinicalTrials.gov)", raw_json=payload, use_llm=(limit == 1))
         created_ids.append(c.case_id)
 
     return {"source": "ClinicalTrials.gov API v2", "ingested_count": len(created_ids), "case_ids": created_ids}
@@ -526,7 +530,7 @@ def reassess_case(case_id: str, user: EnterpriseUser = Depends(get_current_user)
 
     assess_agent = ClinicalAssessmentAgent()
     seriousness, causality, listedness, narrative, trace5 = assess_agent.run(
-        case.raw_report, case.structured_data, case.meddra_codings
+        case.raw_report, case.structured_data, case.meddra_codings, use_llm=True, deep_reasoning=True
     )
     case.seriousness = seriousness
     case.causality = causality

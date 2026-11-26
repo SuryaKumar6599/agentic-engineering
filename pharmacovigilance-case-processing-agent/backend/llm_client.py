@@ -52,7 +52,7 @@ def ollama_chat_json(
             ],
             "format": "json",
             "stream": False,
-            "options": {"temperature": 0.0},
+            "options": {"temperature": 0.0, "num_predict": 220},
         }
         resp = httpx.post(f"{OLLAMA_BASE_URL}/api/chat", json=payload, timeout=timeout)
         resp.raise_for_status()
