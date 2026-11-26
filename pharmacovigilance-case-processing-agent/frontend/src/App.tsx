@@ -32,6 +32,7 @@ export default function App() {
   const [searchQ, setSearchQ] = useState('');
   const [intakeOpen, setIntakeOpen] = useState(false);
   const [toast, setToast] = useState('');
+  const [llmInfo, setLlmInfo] = useState<{ available: boolean; fast_model: string; reasoning_model: string } | null>(null);
   const [globalAudit, setGlobalAudit] = useState<AuditTrailEntry[]>([]);
   const [stats, setStats] = useState<{
     total_cases: number;
@@ -60,6 +61,13 @@ export default function App() {
     const res = await apiFetch('/api/audit-trail?limit=150');
     if (res.ok) setGlobalAudit(await res.json());
   };
+
+  useEffect(() => {
+    fetch('/api/llm/status')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => d && setLlmInfo(d))
+      .catch(() => {});
+  }, []);
 
   useEffect(() => {
     if (!currentUser) return;
@@ -97,7 +105,10 @@ export default function App() {
           </div>
           <div>
             <div>PV-Agentic</div>
-            <div className="brand-sub">Enterprise 9-Stage Pharmacovigilance Platform</div>
+            <div className="brand-sub">
+              Enterprise 9-Stage Pharmacovigilance
+              {llmInfo?.available ? ` · Ollama (${llmInfo.reasoning_model} + ${llmInfo.fast_model})` : ''}
+            </div>
           </div>
         </div>
 

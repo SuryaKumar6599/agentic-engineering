@@ -6,6 +6,7 @@ import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
 from backend import db
+from backend.llm_client import FAST_MODEL, REASONING_MODEL, ollama_chat_json, ollama_chat_text
 from backend.meddra_dict import MEDDRA_TERMS, check_listedness, map_to_meddra
 from backend.models import (
     AgentTraceStep,
@@ -108,7 +109,7 @@ class ExtractionAndCodingAgent:
 
     name = "ExtractionAndCodingAgent"
 
-    def extract_structured(self, payload: Dict[str, Any]) -> StructuredCaseData:
+    def extract_structured(self, payload: Dict[str, Any], use_llm: bool = False) -> StructuredCaseData:
         if "mdr_report_key" in payload or ("device" in payload and "patient" in payload and isinstance(payload.get("patient"), list)):
             devices = payload.get("device", []) or []
             suspect_drugs = [
@@ -121,7 +122,7 @@ class ExtractionAndCodingAgent:
             ]
             mdr_texts = [t.get("text", "") for t in (payload.get("mdr_text") or []) if t.get("text")]
             combined_text = " ".join(mdr_texts)
-            text_extracted = self.extract_structured({"raw_text": combined_text}) if combined_text else StructuredCaseData()
+            text_extracted = self.extract_structured({"raw_text": combined_text}, use_llm=use_llm) if combined_text else StructuredCaseData()
             aes = text_extracted.adverse_events_raw or [payload.get("event_type") or "Device malfunction"]
             return StructuredCaseData(
                 safety_report_id=str(payload.get("mdr_report_key") or payload.get("report_number") or ""),
@@ -138,7 +139,7 @@ class ExtractionAndCodingAgent:
 
         if "pmid" in payload:
             abstract = f"{payload.get('title', '')}. {payload.get('abstract', '')}"
-            text_extracted = self.extract_structured({"raw_text": abstract})
+            text_extracted = self.extract_structured({"raw_text": abstract}, use_llm=use_llm)
             return StructuredCaseData(
                 safety_report_id=f"PMID-{payload['pmid']}",
                 receive_date=payload.get("pub_date"),
@@ -155,7 +156,7 @@ class ExtractionAndCodingAgent:
 
         if "nct_id" in payload:
             summary_txt = f"{payload.get('title', '')}. {payload.get('ae_summary', '')}"
-            text_extracted = self.extract_structured({"raw_text": summary_txt})
+            text_extracted = self.extract_structured({"raw_text": summary_txt}, use_llm=use_llm)
             interventions = [DrugEntry(name=n.upper(), role="Suspect") for n in (payload.get("interventions") or [])[:3]]
             return StructuredCaseData(
                 safety_report_id=payload["nct_id"],
@@ -218,9 +219,40 @@ class ExtractionAndCodingAgent:
                 reaction_outcome=outcomes[0] if outcomes else "Unknown",
             )
 
-        # Unstructured free-text extraction
+        # Unstructured free-text extraction (LLM via Ollama + deterministic fallback)
         text = payload.get("raw_text", "")
         lower = text.lower()
+
+        if use_llm and len(text.strip()) > 15:
+            llm_ext = ollama_chat_json(
+                system_prompt=(
+                    "You are a pharmacovigilance case-intake extraction agent. "
+                    "Extract structured ICH E2B fields from the adverse event report as JSON with keys: "
+                    "patient_age (e.g. '64 yr' or null), patient_sex ('Male'|'Female'|'Unknown'), "
+                    "reporter_qualification ('Physician'|'Pharmacist'|'Other Health Professional'|'Consumer or Non-Health Professional'|'Unknown'), "
+                    "suspect_drugs (list of uppercase drug names), concomitant_drugs (list of uppercase drug names), "
+                    "adverse_events (list of adverse event terms), lab_findings (list of strings), "
+                    "reaction_outcome ('Recovered/Resolved'|'Recovering/Resolving'|'Not Recovered/Not Resolved'|'Fatal'|'Unknown')."
+                ),
+                user_prompt=text[:3000],
+                model=FAST_MODEL,
+                timeout=30.0,
+            )
+            if isinstance(llm_ext, dict) and (llm_ext.get("suspect_drugs") or llm_ext.get("adverse_events")):
+                return StructuredCaseData(
+                    safety_report_id=None,
+                    receive_date=None,
+                    country="US",
+                    patient_age=llm_ext.get("patient_age"),
+                    patient_sex=llm_ext.get("patient_sex") or "Unknown",
+                    reporter_qualification=llm_ext.get("reporter_qualification") or "Unknown",
+                    suspect_drugs=[DrugEntry(name=str(d).upper(), role="Suspect") for d in (llm_ext.get("suspect_drugs") or [])],
+                    concomitant_drugs=[DrugEntry(name=str(d).upper(), role="Concomitant") for d in (llm_ext.get("concomitant_drugs") or [])],
+                    adverse_events_raw=[str(a) for a in (llm_ext.get("adverse_events") or [])],
+                    medical_history=[],
+                    lab_findings=[str(l) for l in (llm_ext.get("lab_findings") or [])],
+                    reaction_outcome=llm_ext.get("reaction_outcome") or "Unknown",
+                )
 
         age_match = re.search(r"\b(\d{1,3})\s*(?:year-old|years old|yo|y/o|yr)\b", lower)
         age_str = f"{age_match.group(1)} yr" if age_match else None
@@ -320,11 +352,29 @@ class ExtractionAndCodingAgent:
             reaction_outcome=outcome,
         )
 
-    def code_meddra(self, structured: StructuredCaseData) -> Tuple[List[MedDRACoding], AgentTraceStep]:
+    def code_meddra(self, structured: StructuredCaseData, use_llm: bool = False) -> Tuple[List[MedDRACoding], AgentTraceStep]:
         t0 = time.perf_counter()
         codings: List[MedDRACoding] = []
+        llm_used = False
         for raw_ae in structured.adverse_events_raw:
             pt, llt, soc, conf, rationale = map_to_meddra(raw_ae)
+            if use_llm and conf < 0.75:
+                llm_map = ollama_chat_json(
+                    system_prompt=(
+                        "You are a MedDRA v29.0 medical coding specialist. Map the verbatim adverse event to JSON: "
+                        '{"pt": "<MedDRA Preferred Term>", "llt": "<Low Level Term>", "soc": "<System Organ Class>", "rationale": "<brief clinical rationale>"}'
+                    ),
+                    user_prompt=f"Verbatim adverse event: {raw_ae}",
+                    model=FAST_MODEL,
+                    timeout=20.0,
+                )
+                if isinstance(llm_map, dict) and llm_map.get("pt"):
+                    pt = str(llm_map["pt"])
+                    llt = str(llm_map.get("llt") or pt)
+                    soc = str(llm_map.get("soc") or soc)
+                    conf = 0.85
+                    rationale = f"[{FAST_MODEL}] {llm_map.get('rationale', 'LLM MedDRA PT mapping.')}"
+                    llm_used = True
             codings.append(
                 MedDRACoding(
                     verbatim_term=raw_ae,
@@ -343,7 +393,7 @@ class ExtractionAndCodingAgent:
             duration_ms=max(1, int((time.perf_counter() - t0) * 1000)),
             status="COMPLETED",
             summary=f"Extracted {len(structured.suspect_drugs)} suspect drug(s), {len(structured.concomitant_drugs)} concomitant drug(s), and coded {len(codings)} MedDRA PT(s).",
-            details={"meddra_pts": [c.pt for c in codings]},
+            details={"meddra_pts": [c.pt for c in codings], "llm_model": FAST_MODEL if (use_llm and llm_used) else "meddra-dict+fuzzy"},
         )
         return codings, trace
 
@@ -534,6 +584,7 @@ class ClinicalAssessmentAgent:
         payload: Dict[str, Any],
         structured: StructuredCaseData,
         codings: List[MedDRACoding],
+        use_llm: bool = False,
     ) -> Tuple[SeriousnessAssessment, CausalityAssessment, ListednessAssessment, str, AgentTraceStep]:
         t0 = time.perf_counter()
         text = str(payload.get("raw_text", "")).lower()
@@ -637,14 +688,42 @@ class ClinicalAssessmentAgent:
             f"Causality was assessed as {who_cat} (Naranjo score: {naranjo}, {naranjo_cat}), and expectedness was classified as {listed_status}."
         )
 
+        llm_model_used = "deterministic-rules"
+        if use_llm:
+            llm_assess = ollama_chat_json(
+                system_prompt=(
+                    "You are a senior pharmacovigilance clinical scientist. Given structured case data, "
+                    "assess WHO-UMC causality and draft a concise, regulatory-grade ICH E2B clinical narrative. "
+                    "Return JSON with keys: who_umc_category ('Certain'|'Probable/Likely'|'Possible'|'Unlikely'|'Unassessable'), "
+                    "causality_rationale (string), narrative (string, 3-5 sentences covering patient, suspect drug, reaction, seriousness, outcome, causality)."
+                ),
+                user_prompt=(
+                    f"Patient: {structured.patient_age or 'unknown age'} {structured.patient_sex or 'unknown sex'}, "
+                    f"Suspect drugs: {[d.name for d in structured.suspect_drugs]}, "
+                    f"Concomitant: {[d.name for d in structured.concomitant_drugs]}, "
+                    f"MedDRA PTs: {[c.pt for c in codings]}, "
+                    f"Seriousness: {seriousness.rationale}, Listedness: {listed_status}, Outcome: {structured.reaction_outcome}."
+                ),
+                model=REASONING_MODEL,
+                timeout=120.0,
+            )
+            if isinstance(llm_assess, dict):
+                if llm_assess.get("who_umc_category") in {"Certain", "Probable/Likely", "Possible", "Unlikely", "Unassessable"}:
+                    causality.who_umc_category = llm_assess["who_umc_category"]
+                if llm_assess.get("causality_rationale"):
+                    causality.rationale = f"[{REASONING_MODEL}] {llm_assess['causality_rationale']} (Naranjo: {naranjo}, {naranjo_cat})."
+                if llm_assess.get("narrative") and len(str(llm_assess["narrative"]).strip()) >= 60:
+                    narrative = str(llm_assess["narrative"]).strip()
+                llm_model_used = REASONING_MODEL
+
         trace = AgentTraceStep(
             agent_name=self.name,
             stage=WorkflowStage.CASE_PROCESSING,
             timestamp=db.utc_now(),
             duration_ms=max(1, int((time.perf_counter() - t0) * 1000)),
             status="COMPLETED",
-            summary=f"Assessed seriousness ({'Serious' if is_serious else 'Non-Serious'}), causality ({who_cat}), listedness ({listed_status}), and drafted ICH narrative.",
-            details={"naranjo_score": naranjo, "who_umc": who_cat, "listedness": listed_status},
+            summary=f"Assessed seriousness ({'Serious' if is_serious else 'Non-Serious'}), causality ({causality.who_umc_category}), listedness ({listed_status}), and drafted ICH narrative.",
+            details={"naranjo_score": naranjo, "who_umc": causality.who_umc_category, "listedness": listed_status, "llm_model": llm_model_used},
         )
         return seriousness, causality, listedness, narrative, trace
 
@@ -654,7 +733,7 @@ class QCAgent:
 
     name = "QCAgent"
 
-    def run(self, case: PVCase) -> Tuple[QCChecklist, AgentTraceStep]:
+    def run(self, case: PVCase, use_llm: bool = True) -> Tuple[QCChecklist, AgentTraceStep]:
         t0 = time.perf_counter()
         issues: List[str] = []
 
@@ -681,6 +760,28 @@ class QCAgent:
         if not narrative_ok:
             issues.append("Clinical narrative is too short or omits primary suspect product.")
 
+        llm_model_used = "deterministic-sop"
+        if use_llm:
+            qc_llm = ollama_chat_json(
+                system_prompt=(
+                    "You are an independent Pharmacovigilance QC Reviewer. Check if the clinical narrative accurately reflects "
+                    "the suspect drugs, MedDRA PTs, and seriousness. Return JSON: {\"consistent\": true|false, \"issues\": [\"...\"]}."
+                ),
+                user_prompt=(
+                    f"Suspect drugs: {[d.name for d in case.structured_data.suspect_drugs]}, "
+                    f"MedDRA PTs: {[c.pt for c in case.meddra_codings]}, Serious: {case.seriousness.is_serious}. "
+                    f"Narrative: {case.narrative_text}"
+                ),
+                model=FAST_MODEL,
+                timeout=25.0,
+            )
+            if isinstance(qc_llm, dict):
+                llm_model_used = FAST_MODEL
+                if qc_llm.get("consistent") is False and isinstance(qc_llm.get("issues"), list):
+                    for iss in qc_llm["issues"]:
+                        if iss and str(iss) not in issues:
+                            issues.append(f"[{FAST_MODEL} QC] {iss}")
+
         sop_ok = case.validity.is_valid and len(issues) == 0
         checklist = QCChecklist(
             passed=len(issues) == 0,
@@ -692,6 +793,8 @@ class QCAgent:
             sop_compliant=sop_ok,
             issues=issues,
         )
+        details = checklist.model_dump()
+        details["llm_model"] = llm_model_used
         trace = AgentTraceStep(
             agent_name=self.name,
             stage=WorkflowStage.QUALITY_CONTROL,
@@ -699,7 +802,7 @@ class QCAgent:
             duration_ms=max(1, int((time.perf_counter() - t0) * 1000)),
             status="COMPLETED" if checklist.passed else "FLAGGED",
             summary="Automated QC passed all 6 SOP checks; ready for Human QC sign-off." if checklist.passed else f"Automated QC flagged {len(issues)} issue(s) for review.",
-            details=checklist.model_dump(),
+            details=details,
         )
         return checklist, trace
 
@@ -709,7 +812,7 @@ class MedicalReviewAgent:
 
     name = "MedicalReviewAgent"
 
-    def run(self, case: PVCase) -> Tuple[MedicalReviewSummary, AgentTraceStep]:
+    def run(self, case: PVCase, use_llm: bool = True) -> Tuple[MedicalReviewSummary, AgentTraceStep]:
         t0 = time.perf_counter()
         flagged: List[str] = []
         if case.seriousness.death and case.structured_data.reaction_outcome != "Fatal":
@@ -717,18 +820,47 @@ class MedicalReviewAgent:
         if case.causality.who_umc_category == "Certain" and case.causality.alternative_causes_present:
             flagged.append("Causality marked Certain despite documented alternative causes/concomitant drugs.")
 
+        llm_model_used = "deterministic-md-rules"
+        clinical_notes = ""
+        if use_llm:
+            md_llm = ollama_chat_json(
+                system_prompt=(
+                    "You are a Pharmacovigilance Medical Reviewer (MD). Evaluate clinical plausibility of the drug-event pair, "
+                    "seriousness, and WHO-UMC causality. Return JSON: {\"clinically_sound\": true|false, \"clinical_notes\": \"...\", \"flagged_items\": []}"
+                ),
+                user_prompt=(
+                    f"Suspect drugs: {[d.name for d in case.structured_data.suspect_drugs]}, "
+                    f"MedDRA PTs: {[c.pt for c in case.meddra_codings]}, Serious: {case.seriousness.rationale}, "
+                    f"Causality: {case.causality.who_umc_category}, Listedness: {case.listedness.status}. Narrative: {case.narrative_text}"
+                ),
+                model=REASONING_MODEL,
+                timeout=120.0,
+            )
+            if isinstance(md_llm, dict):
+                llm_model_used = REASONING_MODEL
+                if md_llm.get("clinical_notes"):
+                    clinical_notes = f"[{REASONING_MODEL}] {md_llm['clinical_notes']}"
+                if md_llm.get("clinically_sound") is False and isinstance(md_llm.get("flagged_items"), list):
+                    for item in md_llm["flagged_items"]:
+                        if item and str(item) not in flagged:
+                            flagged.append(str(item))
+
         sound = len(flagged) == 0
-        summary = MedicalReviewSummary(
-            clinically_sound=sound,
-            clinical_notes=(
+        if not clinical_notes:
+            clinical_notes = (
                 f"Clinical coherence verified for {len(case.meddra_codings)} MedDRA PT(s), "
                 f"seriousness={case.seriousness.is_serious}, causality={case.causality.who_umc_category}. Ready for MD sign-off."
                 if sound
                 else f"Clinical review flagged {len(flagged)} discrepancy(ies) for MD attention."
-            ),
+            )
+        summary = MedicalReviewSummary(
+            clinically_sound=sound,
+            clinical_notes=clinical_notes,
             recommended_action="APPROVE_TO_LEAD" if sound else "RETURN_FOR_CORRECTION",
             flagged_items=flagged,
         )
+        details = summary.model_dump()
+        details["llm_model"] = llm_model_used
         trace = AgentTraceStep(
             agent_name=self.name,
             stage=WorkflowStage.MEDICAL_REVIEW,
@@ -736,7 +868,7 @@ class MedicalReviewAgent:
             duration_ms=max(1, int((time.perf_counter() - t0) * 1000)),
             status="COMPLETED" if sound else "FLAGGED",
             summary=summary.clinical_notes,
-            details=summary.model_dump(),
+            details=details,
         )
         return summary, trace
 
@@ -745,6 +877,7 @@ def run_intake_pipeline(
     source_type: str = "Spontaneous (HCP)",
     raw_json: Optional[Dict[str, Any]] = None,
     raw_text: Optional[str] = None,
+    use_llm: bool = True,
 ) -> PVCase:
     """Execute Stages 1 -> 6 of the multi-agent PV pipeline and persist case + audit trail."""
     now = db.utc_now()
@@ -758,7 +891,7 @@ def run_intake_pipeline(
 
     # Extract structured fields & MedDRA codings (used across Stages 2-5)
     ext_agent = ExtractionAndCodingAgent()
-    structured = ext_agent.extract_structured(payload)
+    structured = ext_agent.extract_structured(payload, use_llm=use_llm)
 
     # Stage 2: Validity Check
     val_agent = CaseValidityAgent()
@@ -777,11 +910,11 @@ def run_intake_pipeline(
     traces.append(t4)
 
     # Stage 5: Coding & Clinical Assessments + Narrative
-    codings, t5a = ext_agent.code_meddra(structured)
+    codings, t5a = ext_agent.code_meddra(structured, use_llm=use_llm)
     traces.append(t5a)
 
     assess_agent = ClinicalAssessmentAgent()
-    seriousness, causality, listedness, narrative, t5b = assess_agent.run(payload, structured, codings)
+    seriousness, causality, listedness, narrative, t5b = assess_agent.run(payload, structured, codings, use_llm=use_llm)
     traces.append(t5b)
 
     # Determine stage & status after automated processing

@@ -21,6 +21,7 @@ from backend.agents import (
     run_intake_pipeline,
 )
 from backend.eval_suite import run_evaluation
+from backend.llm_client import get_ollama_status
 from backend.models import (
     AuditTrailEntry,
     CaseStatus,
@@ -77,6 +78,11 @@ class LoginRequest(BaseModel):
 @app.get("/api/health")
 def health() -> Dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/api/llm/status")
+def llm_status() -> Dict[str, Any]:
+    return get_ollama_status()
 
 
 @app.get("/api/auth/users")

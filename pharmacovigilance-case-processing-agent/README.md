@@ -2,7 +2,7 @@
 
 ![PV-Agentic Dashboard](docs/dashboard.jpg)
 
-An enterprise-grade, 9-stage pharmacovigilance case-processing multi-agent pipeline that ingests public, de-identified adverse event reports, extracts structured clinical fields, suggests MedDRA Preferred Terms (PT / LLT / SOC), assesses seriousness, causality (WHO-UMC & Naranjo), and expectedness/listedness, drafts ICH clinical narratives, and enforces **Human-in-the-Loop (HITL)** approvals with an **immutable SQLite audit trail**, **Enterprise RBAC**, **ICH E2B(R3) XML export**, and an **Evaluation Suite with per-field Precision & Recall**.
+An enterprise-grade, 9-stage pharmacovigilance case-processing multi-agent pipeline powered by **local Ollama LLMs (`qwen3.6:27b` for clinical reasoning/causality/MD review + `qwen2.5:7b` for structured extraction/MedDRA coding/QC)** with deterministic ICH GxP guardrails. It ingests public, de-identified adverse event reports, extracts structured clinical fields, suggests MedDRA Preferred Terms (PT / LLT / SOC), assesses seriousness, causality (WHO-UMC & Naranjo), and expectedness/listedness, drafts ICH clinical narratives, and enforces **Human-in-the-Loop (HITL)** approvals with an **immutable SQLite audit trail**, **Enterprise RBAC**, **ICH E2B(R3) XML export**, and an **Evaluation Suite with per-field Precision & Recall**.
 
 > **Data Privacy Notice**: Uses only public, de-identified regulatory/literature data (openFDA FAERS, openFDA MAUDE, PubMed, ClinicalTrials.gov) and synthetic clinical vignettes — never real patient data.
 

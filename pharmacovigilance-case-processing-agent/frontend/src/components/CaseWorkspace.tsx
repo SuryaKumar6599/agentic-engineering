@@ -445,9 +445,14 @@ export const CaseWorkspace: React.FC<CaseWorkspaceProps> = ({ caseId, currentUse
               <div style={{ display: 'flex', flexDirection: 'column', gap: '0.65rem' }}>
                 {pvCase.agent_traces.map((tr, i) => (
                   <div key={i} className="card" style={{ background: 'var(--surface-muted)', padding: '0.75rem' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.82rem', fontWeight: 700 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.82rem', fontWeight: 700, gap: '0.5rem', flexWrap: 'wrap' }}>
                       <span>{tr.agent_name} — {tr.stage}</span>
-                      <span className="badge badge-success">{tr.status} ({tr.duration_ms}ms)</span>
+                      <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'center' }}>
+                        {typeof tr.details?.llm_model === 'string' && (
+                          <span className="badge badge-standard">{tr.details.llm_model}</span>
+                        )}
+                        <span className="badge badge-success">{tr.status} ({tr.duration_ms}ms)</span>
+                      </div>
                     </div>
                     <div style={{ fontSize: '0.84rem', marginTop: '0.25rem' }}>{tr.summary}</div>
                   </div>
