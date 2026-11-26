@@ -1,0 +1,20 @@
+# Python / uv
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# SQLite runtime database (generated locally)
+data/*.db
+data/*.db-journal
+
+# Node / Vite frontend
+frontend/node_modules/
+frontend/dist/
+
+# Environment & OS
+.env
+.env.*
+.DS_Store
+*.log

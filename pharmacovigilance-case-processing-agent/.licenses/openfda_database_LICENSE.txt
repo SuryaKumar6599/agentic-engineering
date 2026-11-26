@@ -1,0 +1,6 @@
+openFDA API Terms and License Notification
+User notified to review terms at:
+- https://open.fda.gov/apis/
+- https://open.fda.gov/license
+
+Timestamp: 2026-11-26T16:05:11+05:30
