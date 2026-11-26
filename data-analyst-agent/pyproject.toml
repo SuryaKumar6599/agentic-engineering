@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "analyst-agent"
+version = "0.1.0"
+description = "Sandboxed SQL & Python data-analyst agent with data-science guardrails and claim-to-evidence validation."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+ds = ["pandas>=2.0", "numpy>=1.26"]
+llm = ["openai>=1.0", "anthropic>=0.30", "google-genai>=1.0"]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+analyst-agent = "analyst_agent.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
