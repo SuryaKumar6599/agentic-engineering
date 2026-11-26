@@ -1,0 +1,56 @@
+version: "3.9"
+
+services:
+  # ── Langfuse (self-hosted) ──────────────────────────────────────────────────
+  langfuse-server:
+    image: langfuse/langfuse:2
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "3000:3000"
+    environment:
+      DATABASE_URL: postgresql://langfuse:langfuse@postgres:5432/langfuse
+      NEXTAUTH_SECRET: change-me-in-production
+      SALT: change-me-in-production
+      NEXTAUTH_URL: http://localhost:3000
+      TELEMETRY_ENABLED: "false"
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: langfuse
+      POSTGRES_PASSWORD: langfuse
+      POSTGRES_DB: langfuse
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U langfuse"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  # ── Eval runner (optional: run suite as a container) ───────────────────────
+  eval-runner:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    environment:
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY}
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY}
+      LANGFUSE_HOST: http://langfuse-server:3000
+      EVAL_MODEL: gpt-4o-mini
+    volumes:
+      - ./results:/app/results
+      - ./evals:/app/evals
+    command: ["eval", "run", "--dataset", "evals/fixtures/golden/qa.jsonl"]
+    depends_on:
+      - langfuse-server
+    profiles: ["runner"]   # only starts with: docker compose --profile runner up
+
+volumes:
+  pgdata:

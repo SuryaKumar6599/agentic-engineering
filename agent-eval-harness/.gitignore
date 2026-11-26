@@ -1,0 +1,17 @@
+.env
+.venv/
+venv/
+.deepeval/
+.promptfoo/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+dist/
+*.egg-info/
+results/
+*.jsonl.bak
+node_modules/
+.DS_Store

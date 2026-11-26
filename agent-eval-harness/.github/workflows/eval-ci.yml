@@ -1,0 +1,260 @@
+# .github/workflows/eval-ci.yml
+# ──────────────────────────────────────────────────────────────────────────────
+# Full eval CI pipeline:
+#   1. Unit tests (tool-accuracy, deterministic) – no LLM keys needed
+#   2. Integration tests (task-success, Ragas)   – uses LLM keys
+#   3. Regression gate (pass-rate, latency, cost budgets)
+#   4. promptfoo regression                       – prompt comparison
+#   5. Cost budget enforcement                    – fail if over budget
+#   6. Upload results to Langfuse + artifact store
+# ──────────────────────────────────────────────────────────────────────────────
+
+name: Agent Eval Suite
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "0 2 * * *"      # nightly regression at 02:00 UTC
+  workflow_dispatch:
+    inputs:
+      dataset:
+        description: "Golden dataset path"
+        default: "evals/fixtures/golden/qa.jsonl"
+        required: false
+
+env:
+  PYTHON_VERSION: "3.11"
+  RESULTS_DIR: results
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ── 1. Unit tests (fast, no API keys) ──────────────────────────────────────
+  unit-tests:
+    name: "Unit Tests (deterministic)"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Pull Qwen3 model into Ollama
+        run: |
+          curl -sf http://localhost:11434/api/pull \
+            -d '{"name":"qwen3:30b-a3b-ud-q2_k_xl"}' || true
+          for i in $(seq 1 180); do
+            curl -sf http://localhost:11434/api/tags | grep -q "qwen3" && break
+            sleep 10
+          done
+
+      - name: Install dependencies
+        run: pip install -e ".[dev]"
+
+      - name: Run unit tests
+        run: pytest -m unit --timeout=30 -q
+
+  # ── 2. Integration + regression tests (needs API keys) ────────────────────
+  integration-tests:
+    name: "Integration & Regression"
+    runs-on: ubuntu-latest
+    needs: unit-tests
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'run-integration')
+
+    services:
+      # Spin up Ollama so the local Qwen3 model is available in CI
+      ollama:
+        image: ollama/ollama:latest
+        ports:
+          - 11434:11434
+        options: >-
+          --health-cmd "curl -sf http://localhost:11434/api/tags || exit 1"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      # Local model (Ollama service started above)
+      LOCAL_MODEL_BASE_URL: http://localhost:11434/v1
+      LOCAL_MODEL_API_KEY: ollama
+      LOCAL_MODEL_NAME: qwen3:30b-a3b-ud-q2_k_xl
+      EVAL_MODEL: local
+      EVAL_MAX_CONCURRENCY: 1       # single-threaded for CPU-only CI runner
+      COST_BUDGET_USD: "9999.00"    # local inference is free
+      LATENCY_P95_MAX_S: "120.0"    # generous for quantised model on CI hardware
+      # Cloud keys (optional – used only for cloud-based comparison tests)
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
+      LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
+      LANGFUSE_HOST: ${{ secrets.LANGFUSE_HOST }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Pull Qwen3 model into Ollama
+        run: |
+          curl -sf http://localhost:11434/api/pull \
+            -d '{"name":"qwen3:30b-a3b-ud-q2_k_xl"}' || true
+          for i in $(seq 1 180); do
+            curl -sf http://localhost:11434/api/tags | grep -q "qwen3" && break
+            sleep 10
+          done
+
+      - name: Install dependencies
+        run: pip install -e ".[dev]"
+
+      - name: Create results directory
+        run: mkdir -p ${{ env.RESULTS_DIR }}
+
+      - name: Run integration tests
+        run: |
+          pytest -m "integration and not slow" \
+            --timeout=180 \
+            --tb=short \
+            -q \
+            --junitxml=${{ env.RESULTS_DIR }}/junit-integration.xml
+
+      - name: Run regression suite
+        run: |
+          pytest -m regression \
+            --timeout=300 \
+            --tb=short \
+            -q \
+            --junitxml=${{ env.RESULTS_DIR }}/junit-regression.xml
+
+      - name: Run CLI eval + cost gate
+        run: |
+          eval run \
+            --dataset "${{ github.event.inputs.dataset || 'evals/fixtures/golden/qa.jsonl' }}" \
+            --agent example_agent \
+            --out ${{ env.RESULTS_DIR }}/latest.jsonl
+          eval budget --results ${{ env.RESULTS_DIR }}/latest.jsonl
+
+      - name: Upload eval results artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-results-${{ github.run_number }}
+          path: ${{ env.RESULTS_DIR }}/
+          retention-days: 30
+
+      - name: Publish JUnit test results
+        if: always()
+        uses: EnricoMi/publish-unit-test-result-action@v2
+        with:
+          files: ${{ env.RESULTS_DIR }}/junit-*.xml
+
+  # ── 3. promptfoo prompt regression ────────────────────────────────────────
+  promptfoo-regression:
+    name: "promptfoo Prompt Regression"
+    runs-on: ubuntu-latest
+    needs: unit-tests
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'run-integration')
+
+    services:
+      ollama:
+        image: ollama/ollama:latest
+        ports:
+          - 11434:11434
+        options: >-
+          --health-cmd "curl -sf http://localhost:11434/api/tags || exit 1"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install promptfoo
+        run: npm install -g promptfoo
+
+      - name: Pull Qwen3 model into Ollama
+        run: |
+          curl -sf http://localhost:11434/api/pull \
+            -d '{"name":"qwen3:30b-a3b-ud-q2_k_xl"}' || true
+          for i in $(seq 1 180); do
+            curl -sf http://localhost:11434/api/tags | grep -q "qwen3" && break
+            sleep 10
+          done
+
+      - name: Run promptfoo eval
+        working-directory: evals/promptfoo
+        run: |
+          promptfoo eval \
+            --config promptfoo.yaml \
+            --output ../../results/promptfoo-results.json \
+            --no-cache \
+            --max-concurrency 1
+        continue-on-error: false
+
+      - name: Upload promptfoo results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: promptfoo-results-${{ github.run_number }}
+          path: results/promptfoo-results.json
+          retention-days: 30
+
+  # ── 4. Report summary to PR ────────────────────────────────────────────────
+  post-summary:
+    name: "Post Eval Summary"
+    runs-on: ubuntu-latest
+    needs: [integration-tests, promptfoo-regression]
+    if: always() && github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: eval-results-${{ github.run_number }}
+          path: results/
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Pull Qwen3 model into Ollama
+        run: |
+          curl -sf http://localhost:11434/api/pull \
+            -d '{"name":"qwen3:30b-a3b-ud-q2_k_xl"}' || true
+          for i in $(seq 1 180); do
+            curl -sf http://localhost:11434/api/tags | grep -q "qwen3" && break
+            sleep 10
+          done
+
+      - name: Install dependencies
+        run: pip install -e ".[dev]"
+
+      - name: Generate Markdown summary
+        run: |
+          eval report \
+            --results results/latest.jsonl \
+            --fmt markdown > results/summary.md
+
+      - name: Post to PR
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          path: results/summary.md
+          header: eval-summary

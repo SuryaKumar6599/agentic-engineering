@@ -1,0 +1,42 @@
+Machine Learning Project Workflow
+==================================
+
+Planning a machine learning project involves several distinct phases.
+
+Phase 1: Problem Framing
+- Define the business objective and success metrics (accuracy, F1, AUC-ROC).
+- Classify the problem type: supervised, unsupervised, reinforcement learning.
+- Determine if regression, classification, or generation is required.
+
+Phase 2: Data Collection and Assessment
+- Identify data sources: databases, APIs, web scraping, public datasets.
+- Assess data volume, velocity, and variety.
+- Check for class imbalance, missing values, and data drift.
+
+Phase 3: Exploratory Data Analysis (EDA)
+- Compute descriptive statistics: mean, median, standard deviation, skewness.
+- Visualise distributions (histograms, box plots) and correlations (heatmaps).
+- Identify outliers using IQR or z-score methods.
+
+Phase 4: Feature Engineering
+- Encode categorical variables (one-hot, ordinal, target encoding).
+- Scale numerical features (StandardScaler, MinMaxScaler).
+- Generate interaction terms, polynomial features, or embeddings.
+
+Phase 5: Model Selection and Training
+- Baseline model first: logistic regression, decision tree.
+- Iterate to complex models: XGBoost, Random Forest, neural networks.
+- Use cross-validation (k-fold, stratified) to avoid overfitting.
+
+Phase 6: Hyperparameter Optimisation
+- Grid search, random search, or Bayesian optimisation (Optuna, Ray Tune).
+- Track experiments with MLflow or Weights & Biases.
+
+Phase 7: Model Evaluation
+- Evaluate on held-out test set. Report all relevant metrics.
+- Perform error analysis: examine false positives and false negatives.
+
+Phase 8: Deployment
+- Serialise model (pickle, ONNX, TorchScript).
+- Serve via REST API (FastAPI + uvicorn) or batch pipeline.
+- Monitor for data drift and model degradation with Evidently or Grafana.

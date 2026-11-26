@@ -1,0 +1,46 @@
+REST API Development Guide
+==========================
+
+A REST API (Representational State Transfer) is an architectural style for building
+web services. It uses standard HTTP methods: GET, POST, PUT, PATCH, and DELETE.
+
+Key steps to build a REST API:
+
+1. Requirements Analysis
+   Define resources (e.g., users, products, orders), HTTP verbs, and authentication strategy.
+
+2. Technology Stack Selection
+   Common choices: Python (FastAPI, Flask), Node.js (Express), Go (Gin).
+   Select a database: PostgreSQL for relational data, MongoDB for document storage.
+
+3. Project Scaffolding
+   Create a virtual environment, install dependencies, set up version control.
+   Structure: routes/, models/, services/, tests/.
+
+4. Schema and Model Design
+   Design database schemas. Use ORM (SQLAlchemy, Prisma) or query builder.
+   Define Pydantic or Zod models for request/response validation.
+
+5. Endpoint Implementation
+   Implement CRUD operations for each resource.
+   Follow REST conventions: plural nouns for resources (/users, /products).
+   Version your API: /api/v1/...
+
+6. Authentication and Authorization
+   Implement JWT or OAuth 2.0. Use middleware for route protection.
+   Role-based access control (RBAC) for fine-grained permissions.
+
+7. Error Handling
+   Standardise error responses: {"error": "message", "code": 404}.
+   Use HTTP status codes correctly: 200, 201, 400, 401, 403, 404, 422, 500.
+
+8. Testing
+   Unit tests for business logic. Integration tests for endpoints.
+   Tools: pytest, Jest, Postman, httpx.
+
+9. Documentation
+   Use OpenAPI/Swagger for auto-generated docs. Document all parameters.
+
+10. Deployment
+    Containerise with Docker. Deploy to cloud (AWS, GCP, Azure, Railway).
+    Add rate limiting, CORS headers, and HTTPS.

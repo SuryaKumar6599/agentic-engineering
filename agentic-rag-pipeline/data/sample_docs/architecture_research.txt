@@ -1,0 +1,48 @@
+Software Architecture Research Notes
+=====================================
+
+Microservices Architecture
+---------------------------
+Microservices decompose a monolithic application into small, independently deployable
+services that communicate via APIs (REST, gRPC, or message queues).
+
+Benefits:
+- Independent scaling of each service.
+- Technology heterogeneity — each service can use the best language/framework.
+- Fault isolation — a failure in one service does not cascade.
+
+Challenges:
+- Distributed system complexity: network latency, partial failures.
+- Data consistency: two-phase commit vs. eventual consistency (Saga pattern).
+- Observability: requires distributed tracing (Jaeger, Zipkin, OpenTelemetry).
+
+Event-Driven Architecture
+--------------------------
+Systems communicate by emitting and consuming events via a message broker
+(Apache Kafka, RabbitMQ, AWS SQS/SNS).
+
+Key patterns:
+- Event Sourcing: the state of an aggregate is derived from a sequence of events.
+- CQRS (Command Query Responsibility Segregation): separate read/write models.
+- Outbox Pattern: atomically write domain events to a database outbox table,
+  then relay to the broker asynchronously to avoid dual-write problems.
+
+Clean Architecture (Hexagonal / Ports & Adapters)
+---------------------------------------------------
+Robert C. Martin's Clean Architecture places business rules at the centre,
+surrounded by application, adapter, and infrastructure layers.
+
+Dependency Rule: source code dependencies must point inward. Inner layers never
+know about outer layers.
+
+Layers (inside out):
+1. Entities — enterprise-wide business rules.
+2. Use Cases — application-specific business rules.
+3. Interface Adapters — controllers, presenters, gateways.
+4. Frameworks & Drivers — databases, web frameworks, UI.
+
+Research Papers of Note:
+- "A Pattern Language" — Alexander et al. (precursor to software patterns)
+- "Design Patterns: Elements of Reusable Object-Oriented Software" — Gang of Four
+- "Building Microservices" — Sam Newman
+- "Designing Data-Intensive Applications" — Martin Kleppmann
